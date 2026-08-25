@@ -1,16 +1,19 @@
-#include <Arduino.h>
+#include <M5Unified.h>
+#include <M5Utility.h>
 
-// put function declarations here:
-int myFunction(int, int);
+#include "KeyboardUtils.h"
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  auto cfg = M5.config();
+  M5.begin(cfg);
+
+  bool unit_ready{};
+  unit_ready = setup_keyboard_i2c();
+  if (!unit_ready) {
+    while (true) {
+      m5::utility::delay(10000);
+    }
+  }
 }
 
-void loop() {
-  // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) { return x + y; }
+void loop() { M5.update(); }
