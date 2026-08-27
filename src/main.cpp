@@ -57,6 +57,12 @@ bool cursor_visible = true;
 uint32_t last_cursor_blink_ms = 0;
 size_t saved_slots_scroll = 0;
 
+bool is_settings_back_key(char key) {
+  // CardKB2 UART can report a short Fn+1 press as a plain '1'. Settings does
+  // not otherwise use numeric input, so accept both representations here.
+  return is_escape_key(key) || key == '1';
+}
+
 void draw_menu_item(const char* label, const String& value, int y,
                     bool selected) {
   const uint16_t background = selected ? TFT_NAVY : TFT_BLACK;
@@ -105,7 +111,7 @@ void draw_settings() {
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
   M5.Display.setCursor(12, M5.Display.height() - 16);
-  M5.Display.print("ARROWS CHANGE  ENTER TOGGLE  ESC BACK");
+  M5.Display.print("ARROWS CHANGE  ENTER TOGGLE  FN+1 BACK");
 }
 
 String serialize_program() {
@@ -585,7 +591,7 @@ void handle_settings_key(char key) {
     }
     return;
   }
-  if (is_escape_key(key)) {
+  if (is_settings_back_key(key)) {
     app_screen = AppScreen::kLauncher;
     draw_launcher();
     return;
