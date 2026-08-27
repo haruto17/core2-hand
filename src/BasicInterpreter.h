@@ -28,6 +28,9 @@ class BasicInterpreter {
 
   bool execute(const String& statement, bool allow_control_flow = true);
   bool execute_assignment(const String& statement, int equals_position);
+  bool execute_if(const String& statement);
+  bool execute_loop(const String& statement);
+  bool evaluate_condition(const String& expression, bool& result);
   bool resolve_value(const String& token, Value& value);
   bool resolve_integer(const String& token, int32_t& value);
   bool set_variable(const String& name, const Value& value);

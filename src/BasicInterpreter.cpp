@@ -215,6 +215,20 @@ bool BasicInterpreter::execute(const String& raw_statement,
     return true;
   }
 
+  if (starts_with_command(upper, "IF")) {
+    if (!allow_control_flow) {
+      return fail("NESTED COMMAND");
+    }
+    return execute_if(statement);
+  }
+
+  if (starts_with_command(upper, "LOOP")) {
+    if (!allow_control_flow) {
+      return fail("NESTED COMMAND");
+    }
+    return execute_loop(statement);
+  }
+
   const int equals = find_outside_quotes(statement, '=');
   if (equals >= 0) {
     return execute_assignment(statement, equals);
@@ -235,6 +249,146 @@ bool BasicInterpreter::execute_assignment(const String& statement,
     return false;
   }
   return set_variable(name, value);
+}
+
+bool BasicInterpreter::execute_if(const String& statement) {
+  const int then_position = find_keyword(statement, "THEN", 2);
+  if (then_position < 0) {
+    return fail("THEN EXPECTED");
+  }
+
+  bool condition{};
+  if (!evaluate_condition(trimmed(statement.substring(2, then_position)),
+                          condition)) {
+    return false;
+  }
+
+  const String actions = trimmed(statement.substring(then_position + 4));
+  const int else_position = find_keyword(actions, "ELSE");
+  const String when_true = trimmed(
+      else_position < 0 ? actions : actions.substring(0, else_position));
+  const String when_false =
+      else_position < 0 ? "" : trimmed(actions.substring(else_position + 4));
+  if (when_true.isEmpty()) {
+    return fail("COMMAND EXPECTED");
+  }
+  if (condition) {
+    return execute(when_true, false);
+  }
+  return when_false.isEmpty() ? true : execute(when_false, false);
+}
+
+bool BasicInterpreter::execute_loop(const String& statement) {
+  const int equals = find_outside_quotes(statement, '=', 4);
+  if (equals < 0) {
+    return fail("BAD LOOP");
+  }
+  const int to_position = find_keyword(statement, "TO", equals + 1);
+  if (to_position < 0) {
+    return fail("BAD LOOP");
+  }
+  const int then_position = find_keyword(statement, "THEN", to_position + 2);
+  if (then_position < 0) {
+    return fail("BAD LOOP");
+  }
+
+  String name = trimmed(statement.substring(4, equals));
+  name.toUpperCase();
+  if (!is_identifier(name)) {
+    return fail("BAD VARIABLE");
+  }
+
+  int32_t first{};
+  int32_t last{};
+  if (!resolve_integer(trimmed(statement.substring(equals + 1, to_position)),
+                       first) ||
+      !resolve_integer(
+          trimmed(statement.substring(to_position + 2, then_position)), last)) {
+    return fail("INTEGER EXPECTED");
+  }
+  const String body = trimmed(statement.substring(then_position + 4));
+  if (body.isEmpty()) {
+    return fail("COMMAND EXPECTED");
+  }
+
+  if (first > last) {
+    return true;
+  }
+  Value counter;
+  counter.type = ValueType::Integer;
+  for (int32_t current = first;; ++current) {
+    counter.integer = current;
+    set_variable(name, counter);
+    if (!execute(body, false)) {
+      return false;
+    }
+    if (current == last) {
+      break;
+    }
+  }
+  return true;
+}
+
+bool BasicInterpreter::evaluate_condition(const String& expression,
+                                          bool& result) {
+  int operator_position = -1;
+  size_t operator_length = 1;
+  bool less_or_equal = false;
+  bool less_than = false;
+  bool quoted = false;
+
+  for (size_t i = 0; i < expression.length(); ++i) {
+    if (expression[i] == '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (quoted) {
+      continue;
+    }
+    if (expression[i] == '<' && i + 1 < expression.length() &&
+        expression[i + 1] == '=') {
+      operator_position = static_cast<int>(i);
+      operator_length = 2;
+      less_or_equal = true;
+      break;
+    }
+    if (expression[i] == '<') {
+      operator_position = static_cast<int>(i);
+      less_than = true;
+      break;
+    }
+    if (expression[i] == '=') {
+      operator_position = static_cast<int>(i);
+      break;
+    }
+  }
+  if (operator_position < 0) {
+    return fail("BAD CONDITION");
+  }
+
+  Value left;
+  Value right;
+  if (!resolve_value(trimmed(expression.substring(0, operator_position)),
+                     left) ||
+      !resolve_value(
+          trimmed(expression.substring(operator_position + operator_length)),
+          right)) {
+    return false;
+  }
+  if (left.type != right.type) {
+    return fail("TYPE MISMATCH");
+  }
+  if (left.type == ValueType::Integer) {
+    result = less_or_equal ? left.integer <= right.integer
+             : less_than   ? left.integer < right.integer
+                           : left.integer == right.integer;
+  } else {
+    const int comparison = left.text.compareTo(right.text);
+    result = less_or_equal ? comparison <= 0
+             : less_than   ? comparison < 0
+                           : comparison == 0;
+  }
+  return true;
 }
 
 bool BasicInterpreter::resolve_value(const String& raw_token, Value& value) {
