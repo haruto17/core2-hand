@@ -134,6 +134,87 @@ bool BasicInterpreter::execute(const String& raw_statement,
     return true;
   }
 
+  if (starts_with_command(upper, "CURSOR")) {
+    const String arguments = trimmed(statement.substring(6));
+    const int comma = find_outside_quotes(arguments, ',');
+    int32_t x{};
+    int32_t y{};
+    if (comma < 0 ||
+        !resolve_integer(trimmed(arguments.substring(0, comma)), x) ||
+        !resolve_integer(trimmed(arguments.substring(comma + 1)), y)) {
+      return fail("BAD CURSOR");
+    }
+    M5.Display.setCursor(x, y);
+    return true;
+  }
+
+  if (starts_with_command(upper, "WAIT")) {
+    int32_t seconds{};
+    if (!resolve_integer(trimmed(statement.substring(4)), seconds) ||
+        seconds < 0) {
+      return fail("BAD WAIT");
+    }
+    for (int32_t i = 0; i < seconds; ++i) {
+      m5::utility::delay(1000);
+    }
+    return true;
+  }
+
+  if (starts_with_command(upper, "BEEP")) {
+    const String arguments = trimmed(statement.substring(4));
+    const int comma = find_outside_quotes(arguments, ',');
+    int32_t frequency{};
+    int32_t seconds{};
+    if (comma < 0 || find_outside_quotes(arguments, ',', comma + 1) >= 0 ||
+        !resolve_integer(trimmed(arguments.substring(0, comma)), frequency) ||
+        !resolve_integer(trimmed(arguments.substring(comma + 1)), seconds) ||
+        frequency <= 0 || seconds < 0 ||
+        static_cast<uint32_t>(seconds) > UINT32_MAX / 1000U) {
+      return fail("BAD BEEP");
+    }
+    if (seconds == 0) {
+      M5.Speaker.stop();
+      return true;
+    }
+    if (!M5.Speaker.tone(static_cast<float>(frequency),
+                         static_cast<uint32_t>(seconds) * 1000U)) {
+      return fail("BEEP ERROR");
+    }
+    return true;
+  }
+
+  if (upper == "MUTE") {
+    M5.Speaker.stop();
+    return true;
+  }
+
+  if (starts_with_command(upper, "COLOR")) {
+    const String arguments = trimmed(statement.substring(5));
+    const int first_comma = find_outside_quotes(arguments, ',');
+    const int second_comma =
+        first_comma < 0
+            ? -1
+            : find_outside_quotes(arguments, ',', first_comma + 1);
+    int32_t red{};
+    int32_t green{};
+    int32_t blue{};
+    if (first_comma < 0 || second_comma < 0 ||
+        find_outside_quotes(arguments, ',', second_comma + 1) >= 0 ||
+        !resolve_integer(trimmed(arguments.substring(0, first_comma)), red) ||
+        !resolve_integer(
+            trimmed(arguments.substring(first_comma + 1, second_comma)),
+            green) ||
+        !resolve_integer(trimmed(arguments.substring(second_comma + 1)), blue) ||
+        red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 ||
+        blue > 255) {
+      return fail("BAD COLOR");
+    }
+    text_color_ = M5.Display.color565(static_cast<uint8_t>(red),
+                                      static_cast<uint8_t>(green),
+                                      static_cast<uint8_t>(blue));
+    return true;
+  }
+
   const int equals = find_outside_quotes(statement, '=');
   if (equals >= 0) {
     return execute_assignment(statement, equals);
