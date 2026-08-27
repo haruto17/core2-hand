@@ -49,6 +49,10 @@ bool setup_uart() {
   Wire.end();
   Serial2.begin(115200, SERIAL_8N1, pin_num_rx, pin_num_tx);
 
+  auto config = keyboard.config();
+  config.interval = 1;
+  keyboard.config(config);
+
   return unit.add(keyboard, Serial2) && unit.begin();
 }
 
@@ -68,6 +72,11 @@ bool read_key(char& key) {
   key = keyboard.getchar();
   keyboard.discard();
   return true;
+}
+
+bool was_escape_shortcut_pressed() {
+  return keyboard.wasPressed(m5::unit::cardkb2::KEY_1) &&
+         keyboard.isFunction();
 }
 
 bool is_cursor_left_key(char key) {

@@ -743,9 +743,19 @@ void setup() {
 void loop() {
   M5.update();
   update_unit();
+
+  bool skip_buffered_escape = false;
+  if (was_escape_shortcut_pressed()) {
+    handle_key(0x1B);
+    skip_buffered_escape = true;
+  }
   if (is_keyboard_updated()) {
     char key{};
     while (read_key(key)) {
+      if (skip_buffered_escape && (is_escape_key(key) || key == '1')) {
+        skip_buffered_escape = false;
+        continue;
+      }
       handle_key(key);
     }
   }
