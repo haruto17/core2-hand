@@ -8,7 +8,7 @@
 #include <M5HAL.hpp>
 
 m5::unit::UnitUnified unit;
-m5::unit::UnitCardKB2 keyboard;
+m5::unit::UnitCardKB2UART keyboard;
 
 const char* special_key_name(char ch) {
   switch (ch) {
@@ -39,22 +39,20 @@ const char* special_key_name(char ch) {
   return nullptr;
 }
 
-bool setup_i2c() {
-  auto pin_num_sda = M5.getPin(m5::pin_name_t::port_a_sda);
-  auto pin_num_scl = M5.getPin(m5::pin_name_t::port_a_scl);
-  Wire.end();
-  Wire.begin(pin_num_sda, pin_num_scl, 100 * 1000U);
-
-  return unit.add(keyboard, Wire) && unit.begin();
-}
-
-bool setup_keyboard_i2c() {
-  if (!setup_i2c()) {
+bool setup_uart() {
+  const auto pin_num_rx = M5.getPin(m5::pin_name_t::port_a_pin1);
+  const auto pin_num_tx = M5.getPin(m5::pin_name_t::port_a_pin2);
+  if (pin_num_rx < 0 || pin_num_tx < 0) {
     return false;
   }
 
-  return true;
+  Wire.end();
+  Serial2.begin(115200, SERIAL_8N1, pin_num_rx, pin_num_tx);
+
+  return unit.add(keyboard, Serial2) && unit.begin();
 }
+
+bool setup_keyboard_uart() { return setup_uart(); }
 
 void update_unit() { unit.update(); }
 
@@ -71,3 +69,21 @@ bool read_key(char& key) {
   keyboard.discard();
   return true;
 }
+
+bool is_cursor_left_key(char key) {
+  return key == m5::unit::cardkb2::SCHAR_LEFT;
+}
+
+bool is_cursor_right_key(char key) {
+  return key == m5::unit::cardkb2::SCHAR_RIGHT;
+}
+
+bool is_cursor_up_key(char key) {
+  return key == m5::unit::cardkb2::SCHAR_UP;
+}
+
+bool is_cursor_down_key(char key) {
+  return key == m5::unit::cardkb2::SCHAR_DOWN;
+}
+
+bool is_escape_key(char key) { return key == 0x1B; }
