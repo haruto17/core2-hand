@@ -12,6 +12,8 @@ bool is_keyboard_available();
 
 bool read_key(char& key);
 
+bool was_escape_shortcut_pressed();
+
 bool is_cursor_left_key(char key);
 
 bool is_cursor_right_key(char key);

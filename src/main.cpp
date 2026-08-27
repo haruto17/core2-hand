@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "BasicInterpreter.h"
+#include "DeviceSettings.h"
 #include "KeyboardUtils.h"
 
 namespace {
@@ -20,6 +21,15 @@ constexpr uint32_t kCursorBlinkIntervalMs = 500;
 constexpr size_t kNoLine = static_cast<size_t>(-1);
 constexpr char kStorageNamespace[] = "hand-basic";
 constexpr char kProgramKey[] = "program";
+constexpr size_t kLauncherItemCount = 2;
+constexpr size_t kSettingsItemCount = 4;
+constexpr size_t kSettingsBackItem = 3;
+
+enum class AppScreen {
+  kLauncher,
+  kInterpreter,
+  kSettings,
+};
 
 struct SavedSlot {
   int number;
@@ -34,15 +44,79 @@ String input_before_edit;
 size_t cursor_before_edit = 0;
 size_t selected_line = kNoLine;
 size_t editing_line = kNoLine;
+bool interpreter_back_selected = false;
 String status_message;
 BasicInterpreter interpreter;
 Preferences preferences;
+DeviceSettings device_settings;
+AppScreen app_screen = AppScreen::kLauncher;
+size_t launcher_selection = 0;
+size_t settings_selection = 0;
 bool output_mode = false;
 bool files_mode = false;
 bool sd_ready = false;
 bool cursor_visible = true;
 uint32_t last_cursor_blink_ms = 0;
 size_t saved_slots_scroll = 0;
+
+bool is_settings_back_key(char key) {
+  // CardKB2 UART can report a short Fn+1 press as a plain '1'. Settings does
+  // not otherwise use numeric input, so accept both representations here.
+  return is_escape_key(key) || key == '1';
+}
+
+void draw_menu_item(const char* label, const String& value, int y,
+                    bool selected) {
+  const uint16_t background = selected ? TFT_NAVY : TFT_BLACK;
+  M5.Display.fillRect(0, y, M5.Display.width(), 24, background);
+  M5.Display.setTextColor(TFT_WHITE, background);
+  M5.Display.setTextSize(kTextSize);
+  M5.Display.setCursor(12, y + 4);
+  M5.Display.print(selected ? "> " : "  ");
+  M5.Display.print(label);
+  if (!value.isEmpty()) {
+    M5.Display.print(": ");
+    M5.Display.print(value);
+  }
+}
+
+void draw_launcher() {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextSize(kTextSize);
+  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
+  M5.Display.setCursor(12, 16);
+  M5.Display.println("CORE2-HAND");
+
+  draw_menu_item("Interpreter", "", 64, launcher_selection == 0);
+  draw_menu_item("Settings", "", 96, launcher_selection == 1);
+
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.setCursor(12, M5.Display.height() - 16);
+  M5.Display.print("UP/DOWN SELECT  ENTER OPEN");
+}
+
+void draw_settings() {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextSize(kTextSize);
+  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
+  M5.Display.setCursor(12, 16);
+  M5.Display.println("SETTINGS");
+
+  draw_menu_item("Wi-Fi", device_settings.wifi_enabled ? "ON" : "OFF", 56,
+                 settings_selection == 0);
+  draw_menu_item("Bluetooth", device_settings.bluetooth_enabled ? "ON" : "OFF",
+                 88, settings_selection == 1);
+  draw_menu_item("Brightness", String(device_settings.brightness_percent) + "%",
+                 120, settings_selection == 2);
+  draw_menu_item("Back", "", 152,
+                 settings_selection == kSettingsBackItem);
+
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.setCursor(12, M5.Display.height() - 16);
+  M5.Display.print("UP/DOWN SELECT  ARROWS CHANGE  ENTER");
+}
 
 String serialize_program() {
   String serialized;
@@ -110,8 +184,7 @@ void draw_input_line() {
     --visible_end;
   }
   const String visible_input = input.substring(visible_start, visible_end);
-  const String before_cursor =
-      input.substring(visible_start, input_cursor);
+  const String before_cursor = input.substring(visible_start, input_cursor);
 
   M5.Display.fillRect(0, input_y, M5.Display.width(), kLineHeight, TFT_BLACK);
   M5.Display.setCursor(0, input_y);
@@ -172,6 +245,15 @@ void draw_editor() {
   }
 
   const int input_y = M5.Display.height() - kLineHeight * 2;
+  const int back_y = input_y - kLineHeight;
+  const uint16_t back_background =
+      interpreter_back_selected ? TFT_NAVY : TFT_BLACK;
+  M5.Display.fillRect(0, back_y, M5.Display.width(), kLineHeight,
+                      back_background);
+  M5.Display.setTextColor(TFT_WHITE, back_background);
+  M5.Display.setCursor(0, back_y);
+  M5.Display.print(interpreter_back_selected ? "> Back" : "  Back");
+
   M5.Display.fillRect(0, input_y, M5.Display.width(), kLineHeight * 2,
                       TFT_BLACK);
   reset_cursor_blink();
@@ -268,9 +350,9 @@ void draw_saved_slots() {
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.println("NO SAVED PROGRAMS");
   } else {
-    const size_t end = min(
-        saved_slots.size(),
-        saved_slots_scroll + static_cast<size_t>(kVisibleSavedSlots));
+    const size_t end =
+        min(saved_slots.size(),
+            saved_slots_scroll + static_cast<size_t>(kVisibleSavedSlots));
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     for (size_t i = saved_slots_scroll; i < end; ++i) {
       char prefix[8];
@@ -397,28 +479,42 @@ void submit_input() {
 }
 
 void select_previous_line() {
-  if (editing_line != kNoLine || program.empty()) {
+  if (editing_line != kNoLine) {
     return;
   }
-  if (selected_line == kNoLine) {
+  if (interpreter_back_selected) {
+    if (program.empty()) {
+      return;
+    }
+    interpreter_back_selected = false;
     selected_line = program.size() - 1;
+  } else if (selected_line == kNoLine) {
+    interpreter_back_selected = true;
   } else if (selected_line > 0) {
     --selected_line;
   }
-  status_message = "ENTER TO EDIT " + String(selected_line + 1);
+  status_message = interpreter_back_selected
+                       ? "ENTER TO GO BACK"
+                       : "ENTER TO EDIT " + String(selected_line + 1);
   draw_editor();
 }
 
 void select_next_line() {
-  if (editing_line != kNoLine || program.empty()) {
+  if (editing_line != kNoLine || interpreter_back_selected) {
     return;
   }
-  if (selected_line == kNoLine) {
+  if (program.empty() ||
+      (selected_line != kNoLine && selected_line + 1 >= program.size())) {
+    selected_line = kNoLine;
+    interpreter_back_selected = true;
+  } else if (selected_line == kNoLine) {
     selected_line = 0;
-  } else if (selected_line + 1 < program.size()) {
+  } else {
     ++selected_line;
   }
-  status_message = "ENTER TO EDIT " + String(selected_line + 1);
+  status_message = interpreter_back_selected
+                       ? "ENTER TO GO BACK"
+                       : "ENTER TO EDIT " + String(selected_line + 1);
   draw_editor();
 }
 
@@ -446,6 +542,9 @@ void cancel_line_navigation() {
   } else if (selected_line != kNoLine) {
     selected_line = kNoLine;
     status_message = "";
+  } else if (interpreter_back_selected) {
+    interpreter_back_selected = false;
+    status_message = "";
   } else {
     return;
   }
@@ -457,9 +556,105 @@ void leave_line_selection() {
     selected_line = kNoLine;
     status_message = "";
   }
+  if (interpreter_back_selected) {
+    interpreter_back_selected = false;
+    status_message = "";
+  }
+}
+
+void handle_launcher_key(char key) {
+  if (is_cursor_up_key(key)) {
+    if (launcher_selection > 0) {
+      --launcher_selection;
+      draw_launcher();
+    }
+    return;
+  }
+  if (is_cursor_down_key(key)) {
+    if (launcher_selection + 1 < kLauncherItemCount) {
+      ++launcher_selection;
+      draw_launcher();
+    }
+    return;
+  }
+  if (key != '\r' && key != '\n') {
+    return;
+  }
+
+  if (launcher_selection == 0) {
+    app_screen = AppScreen::kInterpreter;
+    draw_editor();
+  } else {
+    app_screen = AppScreen::kSettings;
+    draw_settings();
+  }
+}
+
+void change_selected_setting(int brightness_delta) {
+  if (settings_selection == 0) {
+    set_wifi_enabled(preferences, device_settings,
+                     !device_settings.wifi_enabled);
+  } else if (settings_selection == 1) {
+    set_bluetooth_enabled(preferences, device_settings,
+                          !device_settings.bluetooth_enabled);
+  } else {
+    int brightness = device_settings.brightness_percent + brightness_delta;
+    if (brightness > 100) {
+      brightness = 10;
+    } else if (brightness < 10) {
+      brightness = 100;
+    }
+    set_brightness_percent(preferences, device_settings,
+                           static_cast<uint8_t>(brightness));
+  }
+  draw_settings();
+}
+
+void handle_settings_key(char key) {
+  if (is_cursor_up_key(key)) {
+    if (settings_selection > 0) {
+      --settings_selection;
+      draw_settings();
+    }
+    return;
+  }
+  if (is_cursor_down_key(key)) {
+    if (settings_selection + 1 < kSettingsItemCount) {
+      ++settings_selection;
+      draw_settings();
+    }
+    return;
+  }
+  if (is_settings_back_key(key)) {
+    app_screen = AppScreen::kLauncher;
+    draw_launcher();
+    return;
+  }
+  if (settings_selection == kSettingsBackItem) {
+    if (key == '\r' || key == '\n') {
+      app_screen = AppScreen::kLauncher;
+      draw_launcher();
+    }
+    return;
+  }
+  if (is_cursor_left_key(key)) {
+    change_selected_setting(-10);
+    return;
+  }
+  if (is_cursor_right_key(key) || key == '\r' || key == '\n') {
+    change_selected_setting(10);
+  }
 }
 
 void handle_key(char key) {
+  if (app_screen == AppScreen::kLauncher) {
+    handle_launcher_key(key);
+    return;
+  }
+  if (app_screen == AppScreen::kSettings) {
+    handle_settings_key(key);
+    return;
+  }
   if (files_mode) {
     if (is_cursor_up_key(key)) {
       if (saved_slots_scroll > 0) {
@@ -496,11 +691,18 @@ void handle_key(char key) {
     return;
   }
   if (is_escape_key(key)) {
-    cancel_line_navigation();
+    if (editing_line != kNoLine || selected_line != kNoLine ||
+        interpreter_back_selected) {
+      cancel_line_navigation();
+    } else {
+      app_screen = AppScreen::kLauncher;
+      draw_launcher();
+    }
     return;
   }
   if (is_cursor_left_key(key)) {
-    const bool had_selection = selected_line != kNoLine;
+    const bool had_selection =
+        selected_line != kNoLine || interpreter_back_selected;
     leave_line_selection();
     if (input_cursor > 0) {
       --input_cursor;
@@ -514,7 +716,8 @@ void handle_key(char key) {
     return;
   }
   if (is_cursor_right_key(key)) {
-    const bool had_selection = selected_line != kNoLine;
+    const bool had_selection =
+        selected_line != kNoLine || interpreter_back_selected;
     leave_line_selection();
     if (input_cursor < input.length()) {
       ++input_cursor;
@@ -528,6 +731,14 @@ void handle_key(char key) {
     return;
   }
   if (key == '\r' || key == '\n') {
+    if (interpreter_back_selected) {
+      interpreter_back_selected = false;
+      selected_line = kNoLine;
+      status_message = "";
+      app_screen = AppScreen::kLauncher;
+      draw_launcher();
+      return;
+    }
     if (selected_line != kNoLine) {
       begin_selected_line_edit();
       return;
@@ -561,6 +772,8 @@ void setup() {
   M5.Display.setRotation(1);
 
   preferences.begin(kStorageNamespace, false);
+  device_settings = load_device_settings(preferences);
+  apply_device_settings(device_settings);
   restore_current_program();
   sd_ready = SD.begin(kSdChipSelect, SPI, 25000000);
 
@@ -576,21 +789,31 @@ void setup() {
     }
   }
   status_message = sd_ready ? "READY" : "READY (NO SD)";
-  draw_editor();
+  draw_launcher();
 }
 
 void loop() {
   M5.update();
   update_unit();
+
+  bool skip_buffered_escape = false;
+  if (was_escape_shortcut_pressed()) {
+    handle_key(0x1B);
+    skip_buffered_escape = true;
+  }
   if (is_keyboard_updated()) {
     char key{};
     while (read_key(key)) {
+      if (skip_buffered_escape && (is_escape_key(key) || key == '1')) {
+        skip_buffered_escape = false;
+        continue;
+      }
       handle_key(key);
     }
   }
 
   const uint32_t now = millis();
-  if (!output_mode && !files_mode &&
+  if (app_screen == AppScreen::kInterpreter && !output_mode && !files_mode &&
       now - last_cursor_blink_ms >= kCursorBlinkIntervalMs) {
     cursor_visible = !cursor_visible;
     last_cursor_blink_ms = now;
