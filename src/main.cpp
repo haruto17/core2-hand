@@ -1,5 +1,7 @@
 #include <M5Unified.h>
 #include <M5Utility.h>
+#include <Preferences.h>
+
 #include <vector>
 
 #include "BasicInterpreter.h"
@@ -12,6 +14,8 @@ constexpr int kLineHeight = 16;
 constexpr int kVisibleProgramLines = 11;
 constexpr uint32_t kCursorBlinkIntervalMs = 500;
 constexpr size_t kNoLine = static_cast<size_t>(-1);
+constexpr char kStorageNamespace[] = "hand-basic";
+constexpr char kProgramKey[] = "program";
 
 std::vector<String> program;
 String input;
@@ -22,9 +26,50 @@ size_t selected_line = kNoLine;
 size_t editing_line = kNoLine;
 String status_message;
 BasicInterpreter interpreter;
+Preferences preferences;
 bool output_mode = false;
 bool cursor_visible = true;
 uint32_t last_cursor_blink_ms = 0;
+
+String serialize_program() {
+  String serialized;
+  for (size_t i = 0; i < program.size(); ++i) {
+    if (i != 0) {
+      serialized += '\n';
+    }
+    serialized += program[i];
+  }
+  return serialized;
+}
+
+std::vector<String> parse_program(const String& serialized) {
+  std::vector<String> lines;
+  size_t start = 0;
+  while (start < serialized.length()) {
+    const int newline = serialized.indexOf('\n', start);
+    String line = newline < 0 ? serialized.substring(start)
+                              : serialized.substring(start, newline);
+    if (line.endsWith("\r")) {
+      line.remove(line.length() - 1);
+    }
+    if (!line.isEmpty()) {
+      lines.push_back(line);
+    }
+    if (newline < 0) {
+      break;
+    }
+    start = newline + 1;
+  }
+  return lines;
+}
+
+void persist_current_program() {
+  preferences.putString(kProgramKey, serialize_program());
+}
+
+void restore_current_program() {
+  program = parse_program(preferences.getString(kProgramKey, ""));
+}
 
 void draw_input_line() {
   const int input_y = M5.Display.height() - kLineHeight * 2;
@@ -136,6 +181,7 @@ void submit_input() {
     }
     const size_t updated_line = editing_line;
     program[updated_line] = command;
+    persist_current_program();
     editing_line = kNoLine;
     selected_line = kNoLine;
     input = input_before_edit;
@@ -167,11 +213,13 @@ void submit_input() {
   }
   if (upper == "NEW") {
     program.clear();
+    persist_current_program();
     status_message = "NEW PROGRAM";
     draw_editor();
     return;
   }
   program.push_back(command);
+  persist_current_program();
   draw_editor();
 }
 
@@ -316,6 +364,9 @@ void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
   M5.Display.setRotation(1);
+
+  preferences.begin(kStorageNamespace, false);
+  restore_current_program();
 
   if (!setup_keyboard_uart()) {
     M5.Display.fillScreen(TFT_BLACK);
