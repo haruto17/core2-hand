@@ -1,6 +1,8 @@
 #include <M5Unified.h>
 #include <M5Utility.h>
 #include <Preferences.h>
+#include <SD.h>
+#include <SPI.h>
 
 #include <vector>
 
@@ -9,15 +11,23 @@
 
 namespace {
 
+constexpr uint8_t kSdChipSelect = 4;
 constexpr int kTextSize = 2;
 constexpr int kLineHeight = 16;
 constexpr int kVisibleProgramLines = 11;
+constexpr int kVisibleSavedSlots = 12;
 constexpr uint32_t kCursorBlinkIntervalMs = 500;
 constexpr size_t kNoLine = static_cast<size_t>(-1);
 constexpr char kStorageNamespace[] = "hand-basic";
 constexpr char kProgramKey[] = "program";
 
+struct SavedSlot {
+  int number;
+  String first_line;
+};
+
 std::vector<String> program;
+std::vector<SavedSlot> saved_slots;
 String input;
 size_t input_cursor = 0;
 String input_before_edit;
@@ -28,8 +38,11 @@ String status_message;
 BasicInterpreter interpreter;
 Preferences preferences;
 bool output_mode = false;
+bool files_mode = false;
+bool sd_ready = false;
 bool cursor_visible = true;
 uint32_t last_cursor_blink_ms = 0;
+size_t saved_slots_scroll = 0;
 
 String serialize_program() {
   String serialized;
@@ -169,6 +182,149 @@ void draw_editor() {
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 }
 
+bool parse_slot(const String& command, const char* name, int& slot) {
+  String upper = command;
+  upper.toUpperCase();
+  const size_t name_length = strlen(name);
+  if (!(upper == name ||
+        (upper.startsWith(name) && upper.length() > name_length &&
+         isSpace(upper[name_length])))) {
+    return false;
+  }
+  String argument = command.substring(name_length);
+  argument.trim();
+  if (argument.isEmpty()) {
+    slot = 0;
+    return true;
+  }
+  char* end = nullptr;
+  const long parsed = strtol(argument.c_str(), &end, 10);
+  slot = (*end == '\0' && parsed >= 1 && parsed <= 100)
+             ? static_cast<int>(parsed)
+             : 0;
+  return true;
+}
+
+String slot_path(int slot) { return "/hand-basic/" + String(slot) + ".txt"; }
+
+void save_program(int slot) {
+  if (slot == 0) {
+    return;
+  }
+  if (!sd_ready) {
+    status_message = "SD NOT READY";
+    return;
+  }
+  if (!SD.exists("/hand-basic") && !SD.mkdir("/hand-basic")) {
+    status_message = "SAVE ERROR";
+    return;
+  }
+  const String path = slot_path(slot);
+  if (SD.exists(path)) {
+    SD.remove(path);
+  }
+  File file = SD.open(path, FILE_WRITE);
+  if (!file) {
+    status_message = "SAVE ERROR";
+    return;
+  }
+  for (const auto& line : program) {
+    file.println(line);
+  }
+  const bool success = file.getWriteError() == 0;
+  file.close();
+  status_message = success ? "SAVED " + String(slot) : "SAVE ERROR";
+}
+
+void load_program(int slot) {
+  if (slot == 0 || !sd_ready) {
+    return;
+  }
+  File file = SD.open(slot_path(slot), FILE_READ);
+  if (!file) {
+    return;
+  }
+  String serialized;
+  while (file.available()) {
+    serialized += static_cast<char>(file.read());
+  }
+  file.close();
+  program = parse_program(serialized);
+  persist_current_program();
+  status_message = "LOADED " + String(slot);
+}
+
+void draw_saved_slots() {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextSize(kTextSize);
+  M5.Display.setCursor(0, 0);
+  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
+  M5.Display.printf("FILES (%u)\n", static_cast<unsigned>(saved_slots.size()));
+
+  if (!sd_ready) {
+    M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+    M5.Display.println("SD NOT READY");
+  } else if (saved_slots.empty()) {
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.println("NO SAVED PROGRAMS");
+  } else {
+    const size_t end = min(
+        saved_slots.size(),
+        saved_slots_scroll + static_cast<size_t>(kVisibleSavedSlots));
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    for (size_t i = saved_slots_scroll; i < end; ++i) {
+      char prefix[8];
+      snprintf(prefix, sizeof(prefix), "%03d ", saved_slots[i].number);
+      String visible_line = String(prefix) + saved_slots[i].first_line;
+      while (!visible_line.isEmpty() &&
+             M5.Display.textWidth(visible_line) > M5.Display.width()) {
+        visible_line.remove(visible_line.length() - 1);
+      }
+      M5.Display.println(visible_line);
+    }
+  }
+
+  M5.Display.fillRect(0, M5.Display.height() - 9, M5.Display.width(), 9,
+                      TFT_BLACK);
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(0, M5.Display.height() - 8);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.print("Fn+D/X SCROLL  ENTER/ESC EXIT");
+}
+
+void open_saved_slots() {
+  saved_slots.clear();
+  saved_slots_scroll = 0;
+  if (sd_ready) {
+    for (int slot = 1; slot <= 100; ++slot) {
+      const String path = slot_path(slot);
+      if (!SD.exists(path)) {
+        continue;
+      }
+      File file = SD.open(path, FILE_READ);
+      if (!file) {
+        continue;
+      }
+      String first_line;
+      while (file.available() && first_line.length() < 128) {
+        const char character = static_cast<char>(file.read());
+        if (character == '\r' || character == '\n') {
+          break;
+        }
+        first_line += character;
+      }
+      file.close();
+      first_line.trim();
+      if (first_line.isEmpty()) {
+        first_line = "(EMPTY)";
+      }
+      saved_slots.push_back({slot, first_line});
+    }
+  }
+  files_mode = true;
+  draw_saved_slots();
+}
+
 void submit_input() {
   String command = input;
   command.trim();
@@ -218,6 +374,23 @@ void submit_input() {
     draw_editor();
     return;
   }
+  if (upper == "FILES") {
+    open_saved_slots();
+    return;
+  }
+
+  int slot{};
+  if (parse_slot(command, "SAVE", slot)) {
+    save_program(slot);
+    draw_editor();
+    return;
+  }
+  if (parse_slot(command, "LOAD", slot)) {
+    load_program(slot);
+    draw_editor();
+    return;
+  }
+
   program.push_back(command);
   persist_current_program();
   draw_editor();
@@ -287,6 +460,28 @@ void leave_line_selection() {
 }
 
 void handle_key(char key) {
+  if (files_mode) {
+    if (is_cursor_up_key(key)) {
+      if (saved_slots_scroll > 0) {
+        --saved_slots_scroll;
+        draw_saved_slots();
+      }
+      return;
+    }
+    if (is_cursor_down_key(key)) {
+      if (saved_slots_scroll + kVisibleSavedSlots < saved_slots.size()) {
+        ++saved_slots_scroll;
+        draw_saved_slots();
+      }
+      return;
+    }
+    if (is_escape_key(key) || key == '\r' || key == '\n') {
+      files_mode = false;
+      status_message = "FILES CLOSED";
+      draw_editor();
+    }
+    return;
+  }
   if (output_mode) {
     output_mode = false;
     draw_editor();
@@ -367,6 +562,7 @@ void setup() {
 
   preferences.begin(kStorageNamespace, false);
   restore_current_program();
+  sd_ready = SD.begin(kSdChipSelect, SPI, 25000000);
 
   if (!setup_keyboard_uart()) {
     M5.Display.fillScreen(TFT_BLACK);
@@ -379,7 +575,7 @@ void setup() {
       m5::utility::delay(10000);
     }
   }
-  status_message = "READY";
+  status_message = sd_ready ? "READY" : "READY (NO SD)";
   draw_editor();
 }
 
@@ -394,7 +590,7 @@ void loop() {
   }
 
   const uint32_t now = millis();
-  if (!output_mode &&
+  if (!output_mode && !files_mode &&
       now - last_cursor_blink_ms >= kCursorBlinkIntervalMs) {
     cursor_visible = !cursor_visible;
     last_cursor_blink_ms = now;
