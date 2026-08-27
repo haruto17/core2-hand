@@ -22,7 +22,8 @@ constexpr size_t kNoLine = static_cast<size_t>(-1);
 constexpr char kStorageNamespace[] = "hand-basic";
 constexpr char kProgramKey[] = "program";
 constexpr size_t kLauncherItemCount = 2;
-constexpr size_t kSettingsItemCount = 3;
+constexpr size_t kSettingsItemCount = 4;
+constexpr size_t kSettingsBackItem = 3;
 
 enum class AppScreen {
   kLauncher,
@@ -107,11 +108,13 @@ void draw_settings() {
                  88, settings_selection == 1);
   draw_menu_item("Brightness", String(device_settings.brightness_percent) + "%",
                  120, settings_selection == 2);
+  draw_menu_item("Back", "", 152,
+                 settings_selection == kSettingsBackItem);
 
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
   M5.Display.setCursor(12, M5.Display.height() - 16);
-  M5.Display.print("ARROWS CHANGE  ENTER TOGGLE  FN+1 BACK");
+  M5.Display.print("UP/DOWN SELECT  ARROWS CHANGE  ENTER");
 }
 
 String serialize_program() {
@@ -594,6 +597,13 @@ void handle_settings_key(char key) {
   if (is_settings_back_key(key)) {
     app_screen = AppScreen::kLauncher;
     draw_launcher();
+    return;
+  }
+  if (settings_selection == kSettingsBackItem) {
+    if (key == '\r' || key == '\n') {
+      app_screen = AppScreen::kLauncher;
+      draw_launcher();
+    }
     return;
   }
   if (is_cursor_left_key(key)) {
