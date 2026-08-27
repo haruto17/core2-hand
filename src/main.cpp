@@ -44,6 +44,7 @@ String input_before_edit;
 size_t cursor_before_edit = 0;
 size_t selected_line = kNoLine;
 size_t editing_line = kNoLine;
+bool interpreter_back_selected = false;
 String status_message;
 BasicInterpreter interpreter;
 Preferences preferences;
@@ -244,6 +245,15 @@ void draw_editor() {
   }
 
   const int input_y = M5.Display.height() - kLineHeight * 2;
+  const int back_y = input_y - kLineHeight;
+  const uint16_t back_background =
+      interpreter_back_selected ? TFT_NAVY : TFT_BLACK;
+  M5.Display.fillRect(0, back_y, M5.Display.width(), kLineHeight,
+                      back_background);
+  M5.Display.setTextColor(TFT_WHITE, back_background);
+  M5.Display.setCursor(0, back_y);
+  M5.Display.print(interpreter_back_selected ? "> Back" : "  Back");
+
   M5.Display.fillRect(0, input_y, M5.Display.width(), kLineHeight * 2,
                       TFT_BLACK);
   reset_cursor_blink();
@@ -469,28 +479,42 @@ void submit_input() {
 }
 
 void select_previous_line() {
-  if (editing_line != kNoLine || program.empty()) {
+  if (editing_line != kNoLine) {
     return;
   }
-  if (selected_line == kNoLine) {
+  if (interpreter_back_selected) {
+    if (program.empty()) {
+      return;
+    }
+    interpreter_back_selected = false;
     selected_line = program.size() - 1;
+  } else if (selected_line == kNoLine) {
+    interpreter_back_selected = true;
   } else if (selected_line > 0) {
     --selected_line;
   }
-  status_message = "ENTER TO EDIT " + String(selected_line + 1);
+  status_message = interpreter_back_selected
+                       ? "ENTER TO GO BACK"
+                       : "ENTER TO EDIT " + String(selected_line + 1);
   draw_editor();
 }
 
 void select_next_line() {
-  if (editing_line != kNoLine || program.empty()) {
+  if (editing_line != kNoLine || interpreter_back_selected) {
     return;
   }
-  if (selected_line == kNoLine) {
+  if (program.empty() ||
+      (selected_line != kNoLine && selected_line + 1 >= program.size())) {
+    selected_line = kNoLine;
+    interpreter_back_selected = true;
+  } else if (selected_line == kNoLine) {
     selected_line = 0;
-  } else if (selected_line + 1 < program.size()) {
+  } else {
     ++selected_line;
   }
-  status_message = "ENTER TO EDIT " + String(selected_line + 1);
+  status_message = interpreter_back_selected
+                       ? "ENTER TO GO BACK"
+                       : "ENTER TO EDIT " + String(selected_line + 1);
   draw_editor();
 }
 
@@ -518,6 +542,9 @@ void cancel_line_navigation() {
   } else if (selected_line != kNoLine) {
     selected_line = kNoLine;
     status_message = "";
+  } else if (interpreter_back_selected) {
+    interpreter_back_selected = false;
+    status_message = "";
   } else {
     return;
   }
@@ -527,6 +554,10 @@ void cancel_line_navigation() {
 void leave_line_selection() {
   if (selected_line != kNoLine) {
     selected_line = kNoLine;
+    status_message = "";
+  }
+  if (interpreter_back_selected) {
+    interpreter_back_selected = false;
     status_message = "";
   }
 }
@@ -660,7 +691,8 @@ void handle_key(char key) {
     return;
   }
   if (is_escape_key(key)) {
-    if (editing_line != kNoLine || selected_line != kNoLine) {
+    if (editing_line != kNoLine || selected_line != kNoLine ||
+        interpreter_back_selected) {
       cancel_line_navigation();
     } else {
       app_screen = AppScreen::kLauncher;
@@ -669,7 +701,8 @@ void handle_key(char key) {
     return;
   }
   if (is_cursor_left_key(key)) {
-    const bool had_selection = selected_line != kNoLine;
+    const bool had_selection =
+        selected_line != kNoLine || interpreter_back_selected;
     leave_line_selection();
     if (input_cursor > 0) {
       --input_cursor;
@@ -683,7 +716,8 @@ void handle_key(char key) {
     return;
   }
   if (is_cursor_right_key(key)) {
-    const bool had_selection = selected_line != kNoLine;
+    const bool had_selection =
+        selected_line != kNoLine || interpreter_back_selected;
     leave_line_selection();
     if (input_cursor < input.length()) {
       ++input_cursor;
@@ -697,6 +731,14 @@ void handle_key(char key) {
     return;
   }
   if (key == '\r' || key == '\n') {
+    if (interpreter_back_selected) {
+      interpreter_back_selected = false;
+      selected_line = kNoLine;
+      status_message = "";
+      app_screen = AppScreen::kLauncher;
+      draw_launcher();
+      return;
+    }
     if (selected_line != kNoLine) {
       begin_selected_line_edit();
       return;
