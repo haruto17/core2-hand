@@ -11,10 +11,15 @@ constexpr int kTextSize = 2;
 constexpr int kLineHeight = 16;
 constexpr int kVisibleProgramLines = 11;
 constexpr uint32_t kCursorBlinkIntervalMs = 500;
+constexpr size_t kNoLine = static_cast<size_t>(-1);
 
 std::vector<String> program;
 String input;
 size_t input_cursor = 0;
+String input_before_edit;
+size_t cursor_before_edit = 0;
+size_t selected_line = kNoLine;
+size_t editing_line = kNoLine;
 String status_message;
 BasicInterpreter interpreter;
 bool output_mode = false;
@@ -24,8 +29,11 @@ uint32_t last_cursor_blink_ms = 0;
 void draw_input_line() {
   const int input_y = M5.Display.height() - kLineHeight * 2;
   char prefix[16];
-  snprintf(prefix, sizeof(prefix), "%03u> ",
-           static_cast<unsigned>(program.size() + 1));
+  const size_t displayed_line =
+      editing_line == kNoLine ? program.size() : editing_line;
+  snprintf(prefix, sizeof(prefix), "%03u%c ",
+           static_cast<unsigned>(displayed_line + 1),
+           editing_line == kNoLine ? '>' : '*');
 
   M5.Display.setTextSize(kTextSize);
   const int cursor_width = 3;
@@ -73,13 +81,27 @@ void draw_editor() {
   M5.Display.println("HAND-BASIC v0.1");
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 
+  const size_t focused_line =
+      editing_line == kNoLine ? selected_line : editing_line;
   size_t first = program.size() > kVisibleProgramLines
                      ? program.size() - kVisibleProgramLines
                      : 0;
+  if (focused_line != kNoLine) {
+    first = focused_line >= static_cast<size_t>(kVisibleProgramLines)
+                ? focused_line - kVisibleProgramLines + 1
+                : 0;
+  }
   const size_t end =
       min(program.size(), first + static_cast<size_t>(kVisibleProgramLines));
   for (size_t i = first; i < end; ++i) {
-    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    const int line_y = M5.Display.getCursorY();
+    const bool focused = i == focused_line;
+    if (focused) {
+      M5.Display.fillRect(0, line_y, M5.Display.width(), kLineHeight, TFT_NAVY);
+      M5.Display.setTextColor(TFT_WHITE, TFT_NAVY);
+    } else {
+      M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    }
     char line_prefix[16];
     snprintf(line_prefix, sizeof(line_prefix), "%03u ",
              static_cast<unsigned>(i + 1));
@@ -105,6 +127,24 @@ void draw_editor() {
 void submit_input() {
   String command = input;
   command.trim();
+
+  if (editing_line != kNoLine) {
+    if (command.isEmpty()) {
+      status_message = "LINE CANNOT BE EMPTY";
+      draw_editor();
+      return;
+    }
+    const size_t updated_line = editing_line;
+    program[updated_line] = command;
+    editing_line = kNoLine;
+    selected_line = kNoLine;
+    input = input_before_edit;
+    input_cursor = min(cursor_before_edit, input.length());
+    input_before_edit = "";
+    status_message = "UPDATED " + String(updated_line + 1);
+    draw_editor();
+    return;
+  }
 
   input = "";
   input_cursor = 0;
@@ -135,33 +175,125 @@ void submit_input() {
   draw_editor();
 }
 
+void select_previous_line() {
+  if (editing_line != kNoLine || program.empty()) {
+    return;
+  }
+  if (selected_line == kNoLine) {
+    selected_line = program.size() - 1;
+  } else if (selected_line > 0) {
+    --selected_line;
+  }
+  status_message = "ENTER TO EDIT " + String(selected_line + 1);
+  draw_editor();
+}
+
+void select_next_line() {
+  if (editing_line != kNoLine || program.empty()) {
+    return;
+  }
+  if (selected_line == kNoLine) {
+    selected_line = 0;
+  } else if (selected_line + 1 < program.size()) {
+    ++selected_line;
+  }
+  status_message = "ENTER TO EDIT " + String(selected_line + 1);
+  draw_editor();
+}
+
+void begin_selected_line_edit() {
+  if (selected_line == kNoLine) {
+    return;
+  }
+  input_before_edit = input;
+  cursor_before_edit = input_cursor;
+  editing_line = selected_line;
+  selected_line = kNoLine;
+  input = program[editing_line];
+  input_cursor = input.length();
+  status_message = "ESC TO CANCEL";
+  draw_editor();
+}
+
+void cancel_line_navigation() {
+  if (editing_line != kNoLine) {
+    editing_line = kNoLine;
+    input = input_before_edit;
+    input_cursor = min(cursor_before_edit, input.length());
+    input_before_edit = "";
+    status_message = "EDIT CANCELLED";
+  } else if (selected_line != kNoLine) {
+    selected_line = kNoLine;
+    status_message = "";
+  } else {
+    return;
+  }
+  draw_editor();
+}
+
+void leave_line_selection() {
+  if (selected_line != kNoLine) {
+    selected_line = kNoLine;
+    status_message = "";
+  }
+}
+
 void handle_key(char key) {
   if (output_mode) {
     output_mode = false;
     draw_editor();
     return;
   }
+  if (is_cursor_up_key(key)) {
+    select_previous_line();
+    return;
+  }
+  if (is_cursor_down_key(key)) {
+    select_next_line();
+    return;
+  }
+  if (is_escape_key(key)) {
+    cancel_line_navigation();
+    return;
+  }
   if (is_cursor_left_key(key)) {
+    const bool had_selection = selected_line != kNoLine;
+    leave_line_selection();
     if (input_cursor > 0) {
       --input_cursor;
     }
     reset_cursor_blink();
-    draw_input_line();
+    if (had_selection) {
+      draw_editor();
+    } else {
+      draw_input_line();
+    }
     return;
   }
   if (is_cursor_right_key(key)) {
+    const bool had_selection = selected_line != kNoLine;
+    leave_line_selection();
     if (input_cursor < input.length()) {
       ++input_cursor;
     }
     reset_cursor_blink();
-    draw_input_line();
+    if (had_selection) {
+      draw_editor();
+    } else {
+      draw_input_line();
+    }
     return;
   }
   if (key == '\r' || key == '\n') {
+    if (selected_line != kNoLine) {
+      begin_selected_line_edit();
+      return;
+    }
     submit_input();
     return;
   }
   if (key == '\b' || key == 0x7F) {
+    leave_line_selection();
     if (input_cursor > 0) {
       input.remove(input_cursor - 1, 1);
       --input_cursor;
@@ -170,6 +302,7 @@ void handle_key(char key) {
     return;
   }
   if (key >= 0x20 && key <= 0x7E) {
+    leave_line_selection();
     input = input.substring(0, input_cursor) + String(key) +
             input.substring(input_cursor);
     ++input_cursor;
